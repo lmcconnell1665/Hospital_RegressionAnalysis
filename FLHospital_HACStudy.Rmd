@@ -1,0 +1,422 @@
+---
+title: "FLHospital_HACStudy"
+author: "Aileen Barry, Morgan Gast, Tim Hengst, Luke McConnell, Price McGinnis"
+date: "6/25/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(ggplot2)
+library(car)
+library(glmnet)
+library(gridExtra)
+library(dplyr)
+library(mgcv)
+
+set.seed(540)
+
+data_raw <- readRDS('FL_data.rds')
+```
+
+## Executive Report
+
+Our goal is to study the association between hospital acquired conditions (HACs) and their effect on length of stay and total charges. We found that the presence of hospital acquired conditions caused a significant increase in length of stay and total charges. The average difference in length of stay for two similiar individuals who only differed in the presence of HACs was 0.62 days. Similarly the mean difference in total charges between groups of individuals who have HACs and those who don't is $954.14. Both of these findings present a significant opportunity for our hospitals to improve their performance and decrease these negative effects on our patients while saving money.
+
+During this study we used a dataset of 346,685 observations of patients from a variety of our hospitals in Florida over the time period of 2010 - 2014. These patients all were treated for conditions related to heart failure, heart attack, and pneumonia. Fortunately this dataset had no missing values so our results are not affected by imputation.
+
+We began with a generic linear regression model to give us a baseline comparison point for HACs and their effects. Our process then included a regression adjustment approach, which allows us to compare the differences between groups of individuals with HACs and those without by standardizing the observations. We also utilized a set of generalized additive models to understand the relationship between the predictors that we used and length of stay/total charges.
+
+\pagebreak
+
+## 1) Business Understanding
+
+This report reviews the association between hospital acquired conditions (HACs) and length of stay as well as total charges. Specifically, we want to understand the effect of HACs on length of stay and total charges and use this knowledge to lower the probability of HACs occurring.
+
+
+## 2) Data Understanding
+
+To understand the relationships that we are trying to study we are using a data set consisting of the following variables from observations of 346,685 in-patient hospitalizations for patients admitted for one of three conditions: Heart Failure (HF), Heart Attack (AMI), and Pneumonia (PN), over the time period 2010 - 2014, for patients in the state of Florida. 
+
+```{r dataset variables}
+names(data_raw)
+```
+
+```{r hospital acquired conditions distribution, fig.height = 3, fig.width = 7, fig.align = "center"}
+(p <- ggplot(data_raw, aes(x = count_dxnopoa_ns)) + 
+  geom_histogram(color = "black", fill = "light blue", bins = 10) +
+  labs(title = "Histogram of Hospital Acquired Conditions",x = "Hospital Acquired Conditions", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5)))
+
+cat('There are', table(data_raw$HACs)[1], 'individuals without HACs and', table(data_raw$HACs)[2], 'with HACs.')
+cat('This means', table(data_raw$HACs)[2]/sum(table(data_raw$HACs)), '% of patients acquired additional conditions during their hospitalization.')
+```
+
+
+This histogram shows the distribution of the number of hospital-acquired conditions each patient has (the number of diagnosed conditions at discharge minus the number of conditions at arrival). The data is skewed to the left with a majority of patients leaving with no additional conditions that were acquired during their treatment. However, the frequency table beneath the histogram (where 1 indicates the presence of an HAC) shows that there were still 72,968 patients who acquired an additional condition while in one of the hospitals.
+
+
+```{r total charge and length of stay distribution, fig.height = 3, fig.width = 7, fig.align = "center"}
+p1 <- ggplot(data_raw, aes(x = los)) + 
+  geom_histogram(color = "black", fill = "light blue", bins = 15) +
+  labs(title = "Histogram of Length of Stay",x = "Length of Stay", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 <- ggplot(data_raw, aes(x = totchg)) + 
+  geom_histogram(color = "black", fill = "light blue", bins = 15) +
+  labs(title = "Histogram of Total Charge",x = "Total Charge", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+
+These histograms show the distributions of our predictors of interest, length of stay and total charge. Both of these have a right skew with a median of 4 and $30,127 respectively.
+
+
+```{r numeric predictor heat map, fig.height = 3, fig.width = 7, fig.align = "center"}
+corr <- cor(data_raw[,c('age', 'nchronic', 'ndx', 'npr', 'visit', 'ahour', 'totalhospital_noofbed')], method = c("spearman"))
+heatmap(corr, keep.dendro = TRUE)
+```
+
+
+This heat map shows the correlation between the other numerical predictors that we will be using to analyze these relationships. NDX and nChronic (shown in the top right corner) have the strongest correlations with each other as indicated by the darker shading.
+
+
+```{r distributions of concerning variables, fig.height = 5, fig.width = 7, fig.align = "center"}
+p1 <- ggplot(data_raw, aes(x = age)) + 
+  geom_histogram(color = "black", fill = "light blue", bins = 15) +
+  labs(title = "Histogram of Age",x = "Age", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 <- ggplot(data_raw, aes(x = ndx)) + 
+  geom_histogram(color = "black", fill = "light blue", bins = 15) +
+  labs(title = "Histogram of NDX",x = "NDX", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p3 <- ggplot(data_raw, aes(x = ndx)) + 
+  geom_histogram(color = "black", fill = "light blue", bins = 15) +
+  labs(title = "Histogram of NPR",x = "NPR", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p4 <- ggplot(data_raw, aes(x = totchg)) + 
+  geom_histogram(color = "black", fill = "light blue", bins = 15) +
+  labs(title = "Histogram of Total Charge",x = "Total Charge", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p5 <- ggplot(data_raw, aes(x = los)) + 
+  geom_histogram(color = "black", fill = "light blue", bins = 15) +
+  labs(title = "Histogram of Length of Stay",x = "Length of Stay", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p6 <- ggplot(data_raw, aes(x = ahour)) + 
+  geom_histogram(color = "black", fill = "light blue", bins = 15) +
+  labs(title = "Histogram of Hour",x = "Hour", y = "Count") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 2, nrow = 3)
+```
+
+
+These histograms show the distributions of variables that we will be using to study this relationship that are not normally distributed. NDX and NPR are not terrible offenders, but adjustments will be made for each of these variables.
+
+## 3) Data Preparation
+```{r data processing steps, include = FALSE}
+cat('The number of missing rows is:', sum(is.na(data_raw)))
+
+data_clean <- data_raw
+
+concerning_variables <- c("age", "ndx", "npr", "totchg", "los", "ahour")
+
+for (i in concerning_variables) {
+  data_clean[[i]] <- log10(data_raw[[i]])
+  data_clean[[i]][which(data_clean[[i]]==-Inf)] <- -18.02
+  data_clean[[i]][which(data_clean[[i]]==Inf)] <- 18.02
+}
+
+data_clean$dshospid <- NULL
+data_clean$count_dxnopoa_ns <- NULL
+data_clean$year <- NULL
+data_clean$drg <- NULL
+```
+
+
+During our data processing step we verified that there were no missing values. Further, we used a log10 transformation on the age, NDX, NPR, total charge, length of stay, and hour variables. We also made the decision to drop the following variables:
+
+- Hospital ID (dshospid): There were 176 different levels, which almost tripled the number of coefficients to be estimated
+- Count of HACs (count_dxnopoa_ns): This count is used to derive the HAC variable that we are trying to study the effect of, so we can't use it in analysis
+- Year (year): There is not a large enough time frame to make year a useful predictor
+- Condition (drg): This variable is used to create the condition categories which makes it redundant
+
+
+## 4 & 5) Statistical Models and Results
+```{r question b and c pre treatment covariate balance}
+cov_bal <- suppressWarnings(cbind(data_clean %>% group_by(HACs) %>% summarise_all(funs(mean(., na.rm = TRUE))),
+count = c(table(data_clean$HACs))))
+
+cov_bal[,c(1:10,39)]
+```
+
+
+As seen above, our pretreatment covariates averages for our treatment and control groups are significantly different and therefore we will run a regression adjustment for both of the models we will be building in order to better match these groups. We built linear regression models to give us a baseline for comparison before beginning a regression adjustment.
+
+
+```{r question b initial linear regression model}
+B_initial_linear <- lm(los ~ . , data = data_clean)
+
+cat('The r.squared for the linear model for length of stay is:', summary(B_initial_linear)[['r.squared']])
+cat('The adj.r.squared for the linear model for length of stay is:', summary(B_initial_linear)[['adj.r.squared']])
+cat('The RMSE for the linear model for length of stay is:', summary(B_initial_linear)[['sigma']])
+#cat('The f.statistic for the linear model for length of stay is:', summary(B_initial_linear)[['fstatistic']])
+cat('The estimated coefficient for the effects of HACs on length of stay is:',
+    summary(B_initial_linear)$coefficients["HACs1", 1])
+cat('and it has a p-value of:',
+    summary(B_initial_linear)$coefficients["HACs1", 4])
+
+B_initial_linear_SR <- rstandard(B_initial_linear)
+```
+
+
+The linear model above describes the relationship between our predictor variables and length of stay. As seen by the r-squared above, this model doesn't do a great job at describing the relationship but gives us a benchmark for comparison.
+
+
+```{r question c initial linear regression model}
+C_initial_linear <- lm(totchg ~ . , data = data_clean)
+
+cat('The r.squared for the linear model for total charge is:', summary(C_initial_linear)[['r.squared']])
+cat('The adj.r.squared for the linear model for total charge is:', summary(C_initial_linear)[['adj.r.squared']])
+cat('The RMSE for the linear model for total charge is:', summary(C_initial_linear)[['sigma']])
+#cat('The f.statistic for the linear model for total charge is:', summary(C_initial_linear)[['fstatistic']])
+cat('The estimated coefficient for the effects of HACs on total charge is:',
+    summary(C_initial_linear)$coefficients["HACs1", 1])
+cat('and it has a p-value of:',
+    summary(C_initial_linear)$coefficients["HACs1", 4])
+
+C_initial_linear_SR <- rstandard(C_initial_linear) 
+```
+
+
+Similarly, the linear model above describes the relationship between our predictor variables and total charge. As seen by the r-squared above, this model also doesn't do a great job at describing the relationship but gives us a benchmark for comparison.
+
+
+## Regression Adjustment Process for Length of Stay
+```{r question b regression adjustment, fig.height = 3, fig.width = 5, fig.align = "center"}
+No_HAC <- subset(data_clean, HACs == 0, 
+                     select = c('los', 'age', 'nchronic', 'ndx', 'npr', 'totchg', 'visit', 'ahour', 
+                                'totalhospital_noofbed', 'teachstatus', 'tcontrol', 'rural', 
+                                'pay1', 'condition', 'atype', 'aweekend', 'dqtr', 'female', 
+                                'medincstq', 'race', 'tran_out', 'zipinc_qrtl', 'cm_anemdef', 
+                                'cm_chf', 'cm_chrnlung', 'cm_coag', 'cm_depress', 'cm_dm',
+                                'cm_dmcx', 'cm_htn_c', 'cm_hypothy', 'cm_lytes', 'cm_neuro', 
+                                'cm_obese', 'cm_perivasc', 'cm_renlfail', 'read'))
+
+Yes_HAC <- subset(data_clean, HACs == 1, 
+                     select = c('los', 'age', 'nchronic', 'ndx', 'npr', 'totchg', 'visit', 'ahour', 
+                                'totalhospital_noofbed', 'teachstatus', 'tcontrol', 'rural', 
+                                'pay1', 'condition', 'atype', 'aweekend', 'dqtr', 'female', 
+                                'medincstq', 'race', 'tran_out', 'zipinc_qrtl', 'cm_anemdef', 
+                                'cm_chf', 'cm_chrnlung', 'cm_coag', 'cm_depress', 'cm_dm',
+                                'cm_dmcx', 'cm_htn_c', 'cm_hypothy', 'cm_lytes', 'cm_neuro', 
+                                'cm_obese', 'cm_perivasc', 'cm_renlfail', 'read'))
+
+predict_Yes_fit <- lm(los~., data = Yes_HAC)
+predict_No_fit <- lm(los~., data = No_HAC)
+
+cat('Model Predicting Length of Stay for Individuals without HACs')
+cat('The r.squared for the regression adjustment for individuals without HACs is:', summary(predict_No_fit)[['r.squared']])
+cat('The adj.r.squared for the regression adjustment for individuals without HACs is:', summary(predict_No_fit)[['adj.r.squared']])
+cat('The RMSE for the regression adjustment for individuals without HACs is:', summary(predict_No_fit)[['sigma']])
+#cat('The f.statistic for the regression adjustment for length of stay for individuals without HACs is:', summary(predict_No_fit)[['fstatistic']])
+
+cat('Model Predicting Length of Stay for Individuals with HACs')
+cat('The r.squared for the regression adjustment for individuals with HACs is:', summary(predict_Yes_fit)[['r.squared']])
+cat('The adj.r.squared for the regression adjustment for individuals with HACs is:', summary(predict_Yes_fit)[['adj.r.squared']])
+cat('The RMSE for the regression adjustment for individuals with HACs is:', summary(predict_Yes_fit)[['sigma']])
+#cat('The f.statistic for the regression adjustment for length of stay for individuals with HACs is:', summary(predict_Yes_fit)[['fstatistic']])
+
+impute_No <- predict(predict_No_fit, newdata = Yes_HAC)
+impute_Yes <- predict(predict_Yes_fit, newdata = No_HAC)
+
+complete_data_Yes_cases <- data.frame(cbind(Under_Treatment = Yes_HAC$los, Under_Control = impute_No))
+complete_data_No_cases <- data.frame(cbind(Under_Treatment = impute_Yes,Under_Control = No_HAC$los))
+complete_data <- rbind(complete_data_Yes_cases,complete_data_No_cases)
+
+#cat('Top observations from each group')
+#head(complete_data)
+
+(questionB_tTest <- t.test(complete_data$Under_Treatment,complete_data$Under_Control,paired=TRUE))
+
+cat('The unlogged mean difference is:', 10^mean(complete_data$Under_Treatment) - 10^mean(complete_data$Under_Control))
+
+cat('Treated data: the fraction of the treatment outcome that exceed the control outcome is:', mean(complete_data_Yes_cases$Under_Treatment > complete_data_Yes_cases$Under_Control))
+
+cat('Control data: the fraction of the treatment outcome that exceed the control outcome is:', mean(complete_data_No_cases$Under_Treatment > complete_data_No_cases$Under_Control))
+
+complete_data$Trt_Case = c(rep("Observed",
+                               length(impute_No)),
+                            rep("Imputed",length(impute_Yes)))
+
+complete_data$Ctrl_Case = c(rep("Imputed",
+                                length(impute_No)),
+                            rep("Observed",length(impute_Yes)))
+
+p1 <- ggplot(complete_data, aes(x = Trt_Case, y = Under_Treatment)) + geom_boxplot(fill = 'light blue') + labs(title = "Treatment Responses")
+p2 <- ggplot(complete_data, aes(x = Ctrl_Case, y = Under_Control)) + geom_boxplot(fill = 'light blue') + labs(title = "Control Responses")
+grid.arrange(p1, p2, ncol = 2)
+```
+
+
+There was statistically significant evidence that the presence of an HAC increases the length of stay. The average difference of the mean between the treatment and control groups is 0.62 days. As another day spent in the hospital can be considered a long time, these results are also practically significant. In order to find the statistical significance in the difference between the groups it was necessary to compare similiar observations in each group. It was evident from our pretreatmemt covariate scores that our groups were not balanced and thus needed to be adjusted to allow us to fairly compare the treatment and control groups. As seen by the post adjustment means and distributions, these differences have been adjusted for. Overall, those with hospital acquired conditions have a longer length of stay.
+
+
+## Regression Adjustment Process for Total Charge
+```{r question c regression adjustment, fig.height = 3, fig.width = 5, fig.align = "center"}
+No_HAC <- subset(data_clean, HACs == 0, 
+                     select = c('los', 'age', 'nchronic', 'ndx', 'npr', 'totchg', 'visit', 'ahour', 
+                                'totalhospital_noofbed', 'teachstatus', 'tcontrol', 'rural', 
+                                'pay1', 'condition', 'atype', 'aweekend', 'dqtr', 'female', 
+                                'medincstq', 'race', 'tran_out', 'zipinc_qrtl', 'cm_anemdef', 
+                                'cm_chf', 'cm_chrnlung', 'cm_coag', 'cm_depress', 'cm_dm',
+                                'cm_dmcx', 'cm_htn_c', 'cm_hypothy', 'cm_lytes', 'cm_neuro', 
+                                'cm_obese', 'cm_perivasc', 'cm_renlfail', 'read'))
+
+Yes_HAC <- subset(data_clean, HACs == 1, 
+                     select = c('los', 'age', 'nchronic', 'ndx', 'npr', 'totchg', 'visit', 'ahour', 
+                                'totalhospital_noofbed', 'teachstatus', 'tcontrol', 'rural', 
+                                'pay1', 'condition', 'atype', 'aweekend', 'dqtr', 'female', 
+                                'medincstq', 'race', 'tran_out', 'zipinc_qrtl', 'cm_anemdef', 
+                                'cm_chf', 'cm_chrnlung', 'cm_coag', 'cm_depress', 'cm_dm',
+                                'cm_dmcx', 'cm_htn_c', 'cm_hypothy', 'cm_lytes', 'cm_neuro', 
+                                'cm_obese', 'cm_perivasc', 'cm_renlfail', 'read'))
+
+predict_Yes_fit <- lm(totchg~., data = Yes_HAC)
+predict_No_fit <- lm(totchg~., data = No_HAC)
+
+cat('Model Predicting Total Charges for Individuals without HACs')
+cat('The r.squared for the regression adjustment for individuals without HACs is:', summary(predict_No_fit)[['r.squared']])
+cat('The adj.r.squared for the regression adjustment for individuals without HACs is:', summary(predict_No_fit)[['adj.r.squared']])
+cat('The RMSE for the regression adjustment for individuals without HACs is:', summary(predict_No_fit)[['sigma']])
+#cat('The f.statistic for the regression adjustment for length of stay for individuals without HACs is:', summary(predict_No_fit)[['fstatistic']])
+
+cat('Model Predicting Total Charges for Individuals with HACs')
+cat('The r.squared for the regression adjustment for individuals with HACs is:', summary(predict_Yes_fit)[['r.squared']])
+cat('The adj.r.squared for the regression adjustment for individuals with HACs is:', summary(predict_Yes_fit)[['adj.r.squared']])
+cat('The RMSE for the regression adjustment for individuals with HACs is:', summary(predict_Yes_fit)[['sigma']])
+#cat('The f.statistic for the regression adjustment for length of stay for individuals with HACs is:', summary(predict_Yes_fit)[['fstatistic']])
+
+impute_No <- predict(predict_No_fit, newdata = Yes_HAC)
+impute_Yes <- predict(predict_Yes_fit, newdata = No_HAC)
+
+complete_data_Yes_cases <- data.frame(cbind(Under_Treatment = Yes_HAC$totchg, Under_Control = impute_No))
+complete_data_No_cases <- data.frame(cbind(Under_Treatment = impute_Yes,Under_Control = No_HAC$totchg))
+complete_data <- rbind(complete_data_Yes_cases,complete_data_No_cases)
+
+#cat('Top observations from each group')
+#head(complete_data)
+
+(questionC_tTest <- t.test(complete_data$Under_Treatment,complete_data$Under_Control,paired=TRUE))
+
+cat('The unlogged mean of the differences is:', 10^mean(complete_data$Under_Treatment) - 10^mean(complete_data$Under_Control))
+
+cat('Treated data: the fraction of the treatment outcome that exceed the control outcome is:', mean(complete_data_Yes_cases$Under_Treatment > complete_data_Yes_cases$Under_Control))
+
+cat('Control data: the fraction of the treatment outcome that exceed the control outcome is:', mean(complete_data_No_cases$Under_Treatment > complete_data_No_cases$Under_Control))
+
+complete_data$Trt_Case = c(rep("Observed",
+                               length(impute_No)),
+                            rep("Imputed",length(impute_Yes)))
+
+complete_data$Ctrl_Case = c(rep("Imputed",
+                                length(impute_No)),
+                            rep("Observed",length(impute_Yes)))
+
+p1 <- ggplot(complete_data, aes(x = Trt_Case, y = Under_Treatment)) + geom_boxplot(fill = 'light blue') + labs(title = "Treatment Responses")
+p2 <- ggplot(complete_data, aes(x = Ctrl_Case, y = Under_Control)) + geom_boxplot(fill = 'light blue') + labs(title = "Control Responses")
+grid.arrange(p1, p2, ncol = 2)
+```
+
+
+Using the same adjusted regression approach we found statistically significant evidence that patients with an HAC, compared to similiar patients that do not have an HAC, are charged more for their hospitalization. The average difference of the mean between the treatment and control groups is $954.14. Practically, roughly one thousand dollars is a significant amount of money for most individuals. 
+
+
+\pagebreak
+
+## GAM Model and Partial Effect Plots
+
+
+```{r question b partial effect plots for length of stay}
+gam.los <- gam(los ~ s(age)+ s(nchronic)+ s(ndx)+ s(npr)+ s(totchg)+ s(visit)+ s(ahour)+ 
+                                s(totalhospital_noofbed)+ teachstatus+ tcontrol+ rural+ 
+                                pay1+ condition+ atype+ aweekend+ dqtr+ female+ 
+                                medincstq+ race+ tran_out+ zipinc_qrtl+ cm_anemdef+ 
+                                cm_chf+ cm_chrnlung+ cm_coag+ cm_depress+ cm_dm+
+                                cm_dmcx+ cm_htn_c+ cm_hypothy+ cm_lytes+ cm_neuro+ 
+                                cm_obese+ cm_perivasc+ cm_renlfail+ read+ HACs, data=data_clean, family = "gaussian")
+#summary(gam.los)
+cat('The p-value of the GAM model predicting length of stay when HACs are present is:', summary(gam.los)$p.pv["HACs1"])
+
+```
+
+
+```{r question b partial effect plots}
+cat('Partial Effect Plots')
+plot(gam.los, pages = 2, scheme = 1)
+```
+
+
+The partial effect plots above examine the effects of an individual predictor on the final prediction. As seen in the plot for total charge, at the lower range of total charge, our prediction is too high for length of stay, while at the higher range our prediction is too low. On the other hand, nchronic has constant variance throughout its range. The more horinzontal the line is the better suited the predictor is for linear regression.
+
+
+```{r question c partial effect plots for total charge}
+gam.totchg <- gam(totchg ~ s(age)+ s(nchronic)+ ndx+ s(npr)+ s(los)+ s(visit)+ s(ahour)+ 
+                                s(totalhospital_noofbed)+ teachstatus+ tcontrol+ rural+ 
+                                pay1+ condition+ atype+ aweekend+ dqtr+ female+ 
+                                medincstq+ race+ tran_out+ zipinc_qrtl+ cm_anemdef+ 
+                                cm_chf+ cm_chrnlung+ cm_coag+ cm_depress+ cm_dm+
+                                cm_dmcx+ cm_htn_c+ cm_hypothy+ cm_lytes+ cm_neuro+ 
+                                cm_obese+ cm_perivasc+ cm_renlfail+ read+ HACs, data=data_clean, family = "gaussian")
+#summary(gam.totchg)
+cat('The p-value of the GAM model predicting total charge when HACs are present is:', summary(gam.totchg)$p.pv["HACs1"])
+cat('Partial Effect Plots')
+plot(gam.totchg, pages = 2, scheme = 1)
+```
+
+
+For the generalized additive model predicting total charge, hour is seen to be a predictor with constant variance, meaning that it would be well described by a linear model. On the other hand, visit had a lot of variance in its partial effect plot, which indicates that this predictor has a changing effect on total charge throughout its range.
+
+\pagebreak
+
+## 6) Appendix
+```{r question b linear model assumptions, eval=FALSE}
+cat('Assumptions Checks for Linear Model predicting Length of Stay')
+par(mfrow = c(2, 2))
+plot(B_initial_linear) #move to appendix
+
+par(mfrow = c(1, 1))
+acf(B_initial_linear_SR)
+```
+
+```{r question b regression adjustment assumptions, eval=TRUE}
+cat('Assumptions Checks for Regression Adjustment predicting Length of Stay')
+par(mfrow = c(1, 2))
+plot(Yes_HAC$los, predict(predict_Yes_fit)); abline(a=0,b=1)
+plot(No_HAC$los, predict(predict_No_fit)); abline(a=0,b=1)
+```
+
+```{r question c linear model assumptions, eval=TRUE}
+cat('Assumptions Checks for Linear Model predicting Total Charge')
+par(mfrow = c(2, 2))
+plot(C_initial_linear)
+
+par(mfrow = c(1, 1))
+acf(C_initial_linear_SR) # these don't look too great
+```
+
+```{r question c regression adjustment assumptions, eval=TRUE}
+cat('Assumptions Checks for Regression Adjustment predicting Total Charges')
+par(mfrow = c(1, 2))
+plot(Yes_HAC$totchg, predict(predict_Yes_fit)); abline(a=0,b=1)
+plot(No_HAC$totchg, predict(predict_No_fit)); abline(a=0,b=1)
+```
+
